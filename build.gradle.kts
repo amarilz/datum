@@ -1,20 +1,32 @@
-plugins {
-    id("java")
+allprojects {
+    group = (findProperty("group") as String?) ?: "com.amarildoaliaj"
+    version = (findProperty("version") as String?) ?: "0.1.0-SNAPSHOT"
+
+    repositories {
+        mavenCentral()
+    }
 }
 
-group = "com.amarildoaliaj"
-version = "1.0.0-SNAPSHOT"
+subprojects {
+    apply(plugin = "java")
 
-repositories {
-    mavenCentral()
-}
+    pluginManager.withPlugin("java") {
+        configure<JavaPluginExtension> {
+            toolchain {
+                languageVersion.set(JavaLanguageVersion.of(21))
+            }
+            withSourcesJar()
+            withJavadocJar()
+        }
 
-dependencies {
-    testImplementation(platform("org.junit:junit-bom:5.10.0"))
-    testImplementation("org.junit.jupiter:junit-jupiter")
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-}
+        tasks.withType<Test>().configureEach {
+            useJUnitPlatform()
+        }
 
-tasks.test {
-    useJUnitPlatform()
+        dependencies {
+            add("testImplementation", platform("org.junit:junit-bom:5.10.2"))
+            add("testImplementation", "org.junit.jupiter:junit-jupiter")
+            add("testRuntimeOnly", "org.junit.platform:junit-platform-launcher")
+        }
+    }
 }
