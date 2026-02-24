@@ -9,7 +9,7 @@ public record ColumnMeta(
         boolean nullable,
         @Nullable Integer size,
         @Nullable Integer scale,
-        String defaultValue,
+        @Nullable String defaultValue,
         boolean autoIncrement
 ) {
 }
