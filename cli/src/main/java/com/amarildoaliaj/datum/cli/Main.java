@@ -26,23 +26,33 @@ public class Main implements Runnable {
     boolean verbose;
 
     public static void main(String[] args) {
+        CommandLine cmd = new CommandLine(new Main());
 
-        CommandLine.IExecutionExceptionHandler iExecutionExceptionHandler = (ex, cmd, parseResult) -> {
-            Main root = cmd.getCommand();
+        CommandLine.IExecutionExceptionHandler iExecutionExceptionHandler = (ex, commandLine, parseResult) -> {
+            // commandLine qui è quello del comando che ha lanciato l’eccezione (subcommand incluso).
+            // Non facciamo cast: recuperiamo il root e leggiamo verbose in modo sicuro.
+            boolean verbose = false;
+
+            CommandLine root = commandLine;
+            while (root.getParent() != null) {
+                root = root.getParent();
+            }
+            Object rootObj = root.getCommand();
+            if (rootObj instanceof Main m) {
+                verbose = m.verbose;
+            }
+
             System.err.println("Error: " + ex.getMessage());
-            if (root != null && root.verbose) {
+            if (verbose) {
                 ex.printStackTrace(System.err);
             } else {
                 System.err.println("Run with --verbose to see the stacktrace.");
             }
-            return cmd.getCommandSpec().exitCodeOnExecutionException();
+            return commandLine.getCommandSpec().exitCodeOnExecutionException();
         };
+        cmd.setExecutionExceptionHandler(iExecutionExceptionHandler);
 
-        int exitCode = new CommandLine(new Main())
-                .setExecutionExceptionHandler(iExecutionExceptionHandler)
-                .execute(args);
-
-        System.exit(exitCode);
+        System.exit(cmd.execute(args));
     }
 
     @Override
@@ -74,12 +84,11 @@ public class Main implements Runnable {
 
         @CommandLine.Option(
                 names = {"-p", "--password"},
-                required = true,
                 description = "Database password.",
                 interactive = true,
                 arity = "0..1"
         )
-        String password;
+        @Nullable String password;
 
         @CommandLine.Option(
                 names = {"-s", "--schema"},
@@ -104,8 +113,9 @@ public class Main implements Runnable {
         @Override
         public Integer call() throws Exception {
 
-            // if password is not set -> ask again (TTY)
-            try (Connection connection = DriverManager.getConnection(url, user, password)) {
+            String effectivePassword = getEffectivePassword();
+
+            try (Connection connection = DriverManager.getConnection(url, user, effectivePassword)) {
                 SchemaInspector inspector = new JdbcSchemaInspector();
 
                 List<String> onlyTables = tables == null
@@ -146,6 +156,20 @@ public class Main implements Runnable {
 
                 return 0;
             }
+        }
+
+        private String getEffectivePassword() {
+            String effectivePassword = password;
+
+            // fallback on env var (for CI)
+            if (effectivePassword == null || effectivePassword.isBlank()) {
+                effectivePassword = System.getenv("DB_PASSWORD");
+            }
+            if (effectivePassword == null || effectivePassword.isBlank()) {
+                // picocli asks with TTY, but in non-interactive env (Gradle run/CI) you can't do that
+                throw new IllegalArgumentException("Password not provided. Use --password or set DB_PASSWORD.");
+            }
+            return effectivePassword;
         }
     }
 }
