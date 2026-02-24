@@ -1,0 +1,20 @@
+package com.amarildoaliaj.datum.core.schema;
+
+import org.jspecify.annotations.Nullable;
+
+import java.util.List;
+
+public record TableMeta(
+        @Nullable String schema,
+        String name,
+        List<ColumnMeta> columns,
+        List<String> primaryKeyColumns,
+        List<ForeignKeyMeta> importedKeys
+) {
+
+    public String qualifiedName() {
+        return (schema != null && schema.isBlank())
+                ? name
+                : schema + "." + name;
+    }
+}
