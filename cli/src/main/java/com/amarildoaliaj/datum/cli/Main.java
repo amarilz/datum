@@ -235,6 +235,9 @@ public class Main implements Runnable {
     )
     static final class SeedCommand implements Callable<Integer> {
 
+        @CommandLine.ParentCommand
+        Main parent;
+
         @CommandLine.Mixin
         DbOptions db;
 
