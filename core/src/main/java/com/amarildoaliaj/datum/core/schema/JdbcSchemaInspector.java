@@ -1,6 +1,7 @@
 package com.amarildoaliaj.datum.core.schema;
 
 
+import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 
 import java.sql.Connection;
@@ -9,15 +10,14 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 
+@NullMarked
 public final class JdbcSchemaInspector implements SchemaInspector {
 
     private static final Set<String> DEFAULT_TABLE_TYPES = Set.of("TABLE");
@@ -34,78 +34,98 @@ public final class JdbcSchemaInspector implements SchemaInspector {
             List<String> onlyTables
     ) throws SQLException {
         Objects.requireNonNull(connection, "connection");
+
         DatabaseMetaData md = connection.getMetaData();
 
-        Map<String, List<ColumnMeta>> columnsByTable = new HashMap<>();
-        Map<String, List<String>> pkByTable = new HashMap<>();
-        Map<String, List<ForeignKeyMeta>> importedFkByTable = new HashMap<>();
+        List<TableRef> tables = readTables(md, schema, onlyTables);
 
-        // 1. read tables
-        List<String> tables = readTables(md, schema, onlyTables);
+        Map<TableRef, List<ColumnMeta>> columnsByTable = new LinkedHashMap<>();
+        Map<TableRef, List<String>> pkByTable = new LinkedHashMap<>();
+        Map<TableRef, List<ForeignKeyMeta>> importedFkByTable = new LinkedHashMap<>();
 
-        // 2. columns + pk + fk for all tables
-        for (String table : tables) {
-            List<ColumnMeta> columnMetas = readColumns(md, schema, table);
-            columnsByTable.put(table, columnMetas);
+        for (TableRef tableRef : tables) {
+            List<ColumnMeta> columnMetas = readColumns(md, tableRef.schema(), tableRef.name());
+            columnsByTable.put(tableRef, columnMetas);
 
-            List<String> primaryKeys = readPrimaryKey(md, schema, table);
-            pkByTable.put(table, primaryKeys);
+            List<String> primaryKeys = readPrimaryKey(md, tableRef.schema(), tableRef.name());
+            pkByTable.put(tableRef, primaryKeys);
 
-            List<ForeignKeyMeta> foreignKeyMetas = readImportedKeys(md, schema, table);
-            importedFkByTable.put(table, foreignKeyMetas);
+            List<ForeignKeyMeta> foreignKeyMetas = readImportedKeys(md, tableRef.schema(), tableRef.name());
+            importedFkByTable.put(tableRef, foreignKeyMetas);
         }
 
-        // 3. build response
-        List<TableMeta> result = new ArrayList<>();
-        for (String table : tables) {
+        List<TableMeta> result = new ArrayList<>(tables.size());
+        for (TableRef tableRef : tables) {
             TableMeta tableMeta = new TableMeta(
-                    schema,
-                    table,
-                    columnsByTable.getOrDefault(table, List.of()),
-                    pkByTable.getOrDefault(table, List.of()),
-                    importedFkByTable.getOrDefault(table, List.of()));
+                    tableRef.schema(),
+                    tableRef.name(),
+                    columnsByTable.getOrDefault(tableRef, List.of()),
+                    pkByTable.getOrDefault(tableRef, List.of()),
+                    importedFkByTable.getOrDefault(tableRef, List.of()));
             result.add(tableMeta);
         }
         return result;
     }
 
-    private List<String> readTables(DatabaseMetaData md, @Nullable String schema, List<String> onlyTables) throws SQLException {
+    private List<TableRef> readTables(
+            DatabaseMetaData md,
+            @Nullable String schema,
+            List<String> onlyTables
+    ) throws SQLException {
         Set<String> filterSet = new HashSet<>(onlyTables);
 
-        List<String> tables = new ArrayList<>();
-        try (ResultSet rs = md.getTables(null, schema, "%", DEFAULT_TABLE_TYPES.toArray(new String[0]))) {
+        List<TableRef> tables = new ArrayList<>();
+
+        try (ResultSet rs = md.getTables(null, schema, "%", DEFAULT_TABLE_TYPES.toArray(String[]::new))) {
             while (rs.next()) {
+                String tableSchema = normalizeSchema(rs.getString("TABLE_SCHEM"));
                 String tableName = rs.getString("TABLE_NAME");
+
                 if (!filterSet.isEmpty() && !filterSet.contains(tableName)) {
                     continue;
                 }
-                tables.add(tableName);
+
+                tables.add(new TableRef(tableSchema, tableName));
             }
         }
-        tables.sort(String::compareToIgnoreCase);
+
+        tables.sort(Comparator.comparing(
+                        (TableRef t) -> t.schema() == null
+                                ? ""
+                                : t.schema(),
+                        String.CASE_INSENSITIVE_ORDER
+                )
+                .thenComparing(TableRef::name, String.CASE_INSENSITIVE_ORDER));
+
         return tables;
     }
 
-    private List<ColumnMeta> readColumns(DatabaseMetaData md, @Nullable String schema, String table) throws SQLException {
+    private List<ColumnMeta> readColumns(
+            DatabaseMetaData md,
+            @Nullable String schema,
+            String table
+    ) throws SQLException {
         List<ColumnMeta> cols = new ArrayList<>();
+
         try (ResultSet rs = md.getColumns(null, schema, table, "%")) {
             while (rs.next()) {
                 String name = rs.getString("COLUMN_NAME");
                 int jdbcType = rs.getInt("DATA_TYPE");
                 String typeName = rs.getString("TYPE_NAME");
+
                 int nullableFlag = rs.getInt("NULLABLE");
                 boolean nullable = nullableFlag == DatabaseMetaData.columnNullable;
 
                 Integer size = getNullableInt(rs, "COLUMN_SIZE");
                 Integer scale = getNullableInt(rs, "DECIMAL_DIGITS");
-                String defVal = rs.getString("COLUMN_DEF");
+                String defaultValue = rs.getString("COLUMN_DEF");
 
                 boolean autoIncrement = false;
                 try {
                     String isAuto = rs.getString("IS_AUTOINCREMENT");
                     autoIncrement = "YES".equalsIgnoreCase(isAuto);
                 } catch (SQLException ignored) {
-                    // some drivers don't support this column
+                    // some drivers do not support IS_AUTOINCREMENT.
                 }
 
                 ColumnMeta columnMeta = new ColumnMeta(
@@ -115,7 +135,7 @@ public final class JdbcSchemaInspector implements SchemaInspector {
                         nullable,
                         size,
                         scale,
-                        defVal,
+                        defaultValue,
                         autoIncrement);
                 cols.add(columnMeta);
             }
@@ -123,19 +143,24 @@ public final class JdbcSchemaInspector implements SchemaInspector {
         return cols;
     }
 
-    private List<String> readPrimaryKey(DatabaseMetaData md, @Nullable String schema, String table) throws SQLException {
-
+    private List<String> readPrimaryKey(
+            DatabaseMetaData md,
+            @Nullable String schema,
+            String table
+    ) throws SQLException {
         record PkCol(String name, short seq) {
         }
 
         List<PkCol> pk = new ArrayList<>();
+
         try (ResultSet rs = md.getPrimaryKeys(null, schema, table)) {
             while (rs.next()) {
-                String col = rs.getString("COLUMN_NAME");
+                String column = rs.getString("COLUMN_NAME");
                 short seq = rs.getShort("KEY_SEQ");
-                pk.add(new PkCol(col, seq));
+                pk.add(new PkCol(column, seq));
             }
         }
+
         pk.sort(Comparator.comparingInt(PkCol::seq));
         return pk.stream()
                 .map(PkCol::name)
@@ -147,62 +172,130 @@ public final class JdbcSchemaInspector implements SchemaInspector {
             @Nullable String schema,
             String table
     ) throws SQLException {
-        // group by FK_NAME and sort by KEY_SEQ
-        record FkRow(@Nullable String fkName, String pkTable, String fkTable, String pkColumn, String fkColumn,
-                     short seq) {
-        }
+        Map<ForeignKeyKey, ForeignKeyBuilder> builders = new LinkedHashMap<>();
 
-        List<FkRow> rows = new ArrayList<>();
         try (ResultSet rs = md.getImportedKeys(null, schema, table)) {
             while (rs.next()) {
                 String fkName = rs.getString("FK_NAME");
+
+                String pkSchema = normalizeSchema(rs.getString("PKTABLE_SCHEM"));
                 String pkTable = rs.getString("PKTABLE_NAME");
+
+                String fkSchema = normalizeSchema(rs.getString("FKTABLE_SCHEM"));
                 String fkTable = rs.getString("FKTABLE_NAME");
-                String pkCol = rs.getString("PKCOLUMN_NAME");
-                String fkCol = rs.getString("FKCOLUMN_NAME");
+
+                String pkColumn = rs.getString("PKCOLUMN_NAME");
+                String fkColumn = rs.getString("FKCOLUMN_NAME");
+
                 short seq = rs.getShort("KEY_SEQ");
 
-                FkRow fkRow = new FkRow(fkName, pkTable, fkTable, pkCol, fkCol, seq);
-                rows.add(fkRow);
+                ForeignKeyKey key = new ForeignKeyKey(fkName, pkSchema, pkTable, fkSchema, fkTable);
+
+                ForeignKeyBuilder builder = builders.computeIfAbsent(
+                        key,
+                        ignored -> new ForeignKeyBuilder(fkName, pkSchema, pkTable, fkSchema, fkTable));
+
+                builder.add(seq, pkColumn, fkColumn);
             }
         }
 
-        Function<FkRow, String> fkRowStringFunction = r -> r.fkName() == null
-                ? "<unnamed>"
-                : r.fkName();
-        Map<String, List<FkRow>> byName = rows.stream()
-                .collect(Collectors.groupingBy(fkRowStringFunction));
-
-        List<ForeignKeyMeta> fks = new ArrayList<>();
-        for (Map.Entry<String, List<FkRow>> e : byName.entrySet()) {
-            List<FkRow> fkRows = new ArrayList<>(e.getValue());
-            fkRows.sort(Comparator.comparingInt(FkRow::seq));
-
-            String fkName = "<unnamed>".equals(e.getKey())
-                    ? null
-                    : e.getKey();
-            String pkTable = fkRows.getFirst().pkTable();
-            String fkTable = fkRows.getFirst().fkTable();
-
-            List<String> pkCols = fkRows.stream().map(FkRow::pkColumn).toList();
-            List<String> fkCols = fkRows.stream().map(FkRow::fkColumn).toList();
-
-            fks.add(new ForeignKeyMeta(fkName, pkTable, fkTable, pkCols, fkCols));
-        }
-
-        // stable order
-        Function<ForeignKeyMeta, String> foreignKeyMetaStringFunction = fk -> fk.name() == null
-                ? ""
-                : fk.name();
-        fks.sort(Comparator.comparing(foreignKeyMetaStringFunction));
-        return fks;
+        return builders.values().stream()
+                .map(ForeignKeyBuilder::build)
+                .sorted(
+                        Comparator.comparing(
+                                        (ForeignKeyMeta fk) -> fk.name() == null ? "" : fk.name(),
+                                        String.CASE_INSENSITIVE_ORDER
+                                )
+                                .thenComparing(
+                                        fk -> fk.pkSchema() == null ? "" : fk.pkSchema(),
+                                        String.CASE_INSENSITIVE_ORDER
+                                )
+                                .thenComparing(ForeignKeyMeta::pkTable, String.CASE_INSENSITIVE_ORDER)
+                )
+                .toList();
     }
 
     @Nullable
     private Integer getNullableInt(ResultSet rs, String column) throws SQLException {
-        int val = rs.getInt(column);
-        return rs.wasNull()
-                ? null
-                : val;
+        int value = rs.getInt(column);
+        return rs.wasNull() ? null : value;
+    }
+
+    @Nullable
+    private String normalizeSchema(@Nullable String schema) {
+        return (schema == null || schema.isBlank()) ? null : schema;
+    }
+
+    private record TableRef(
+            @Nullable String schema,
+            String name
+    ) {
+    }
+
+    private record ForeignKeyKey(
+            @Nullable String name,
+            @Nullable String pkSchema,
+            String pkTable,
+            @Nullable String fkSchema,
+            String fkTable
+    ) {
+    }
+
+    private record FkColumn(
+            short seq,
+            String pkColumn,
+            String fkColumn
+    ) {
+    }
+
+    private static final class ForeignKeyBuilder {
+
+        private final @Nullable String name;
+        private final @Nullable String pkSchema;
+        private final String pkTable;
+        private final @Nullable String fkSchema;
+        private final String fkTable;
+
+        private final List<FkColumn> columns = new ArrayList<>();
+
+        private ForeignKeyBuilder(
+                @Nullable String name,
+                @Nullable String pkSchema,
+                String pkTable,
+                @Nullable String fkSchema,
+                String fkTable
+        ) {
+            this.name = name;
+            this.pkSchema = pkSchema;
+            this.pkTable = Objects.requireNonNull(pkTable, "pkTable");
+            this.fkSchema = fkSchema;
+            this.fkTable = Objects.requireNonNull(fkTable, "fkTable");
+        }
+
+        private void add(short seq, String pkColumn, String fkColumn) {
+            columns.add(new FkColumn(seq, pkColumn, fkColumn));
+        }
+
+        private ForeignKeyMeta build() {
+            columns.sort(Comparator.comparingInt(FkColumn::seq));
+
+            List<String> pkColumns = columns.stream()
+                    .map(FkColumn::pkColumn)
+                    .toList();
+
+            List<String> fkColumns = columns.stream()
+                    .map(FkColumn::fkColumn)
+                    .toList();
+
+            return new ForeignKeyMeta(
+                    name,
+                    pkSchema,
+                    pkTable,
+                    fkSchema,
+                    fkTable,
+                    pkColumns,
+                    fkColumns
+            );
+        }
     }
 }

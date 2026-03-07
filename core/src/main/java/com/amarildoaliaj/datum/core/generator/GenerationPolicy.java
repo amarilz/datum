@@ -1,9 +1,11 @@
 package com.amarildoaliaj.datum.core.generator;
 
 import com.amarildoaliaj.datum.core.schema.ColumnMeta;
+import org.jspecify.annotations.NullMarked;
 
 import java.util.random.RandomGenerator;
 
+@NullMarked
 public final class GenerationPolicy {
     private final double nullProbability;
 

@@ -1,6 +1,7 @@
 package com.amarildoaliaj.datum.core.generator;
 
 import com.amarildoaliaj.datum.core.schema.ColumnMeta;
+import org.jspecify.annotations.NullMarked;
 
 import java.sql.Types;
 import java.time.Instant;
@@ -9,6 +10,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.random.RandomGenerator;
 
+@NullMarked
 public final class DefaultColumnGeneratorRegistry {
 
     private final GenerationPolicy policy;
