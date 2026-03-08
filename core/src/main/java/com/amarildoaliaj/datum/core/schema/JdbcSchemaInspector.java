@@ -8,14 +8,7 @@ import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 
 @NullMarked
 public final class JdbcSchemaInspector implements SchemaInspector {
@@ -61,7 +54,8 @@ public final class JdbcSchemaInspector implements SchemaInspector {
                     tableRef.name(),
                     columnsByTable.getOrDefault(tableRef, List.of()),
                     pkByTable.getOrDefault(tableRef, List.of()),
-                    importedFkByTable.getOrDefault(tableRef, List.of()));
+                    importedFkByTable.getOrDefault(tableRef, List.of()),
+                    readUniqueKeys(md, tableRef.schema(), tableRef.name(), pkByTable.getOrDefault(tableRef, List.of())));
             result.add(tableMeta);
         }
         return result;
@@ -213,6 +207,58 @@ public final class JdbcSchemaInspector implements SchemaInspector {
                                 .thenComparing(ForeignKeyMeta::pkTable, String.CASE_INSENSITIVE_ORDER)
                 )
                 .toList();
+    }
+
+    private List<UniqueKeyMeta> readUniqueKeys(
+            DatabaseMetaData md,
+            @Nullable String schema,
+            String table,
+            List<String> primaryKeyColumns
+    ) throws SQLException {
+        record IndexColumn(String indexName, String columnName, short ordinalPosition) {
+        }
+        record UniqueKeyBuilder(String name, List<IndexColumn> columns) {
+        }
+
+        Map<String, List<IndexColumn>> byIndex = new LinkedHashMap<>();
+
+        try (ResultSet rs = md.getIndexInfo(null, schema, table, true, false)) {
+            while (rs.next()) {
+                String indexName = rs.getString("INDEX_NAME");
+                String columnName = rs.getString("COLUMN_NAME");
+
+                if (indexName == null || columnName == null) {
+                    continue;
+                }
+
+                short ordinalPosition = rs.getShort("ORDINAL_POSITION");
+                byIndex.computeIfAbsent(indexName, ignored -> new ArrayList<>())
+                        .add(new IndexColumn(indexName, columnName, ordinalPosition));
+            }
+        }
+
+        List<UniqueKeyMeta> result = new ArrayList<>();
+
+        for (Map.Entry<String, List<IndexColumn>> entry : byIndex.entrySet()) {
+            List<IndexColumn> columns = new ArrayList<>(entry.getValue());
+            columns.sort(Comparator.comparingInt(IndexColumn::ordinalPosition));
+
+            List<String> names = columns.stream()
+                    .map(IndexColumn::columnName)
+                    .toList();
+
+            if (names.equals(primaryKeyColumns)) {
+                continue;
+            }
+
+            result.add(new UniqueKeyMeta(entry.getKey(), names));
+        }
+
+        result.sort(Comparator.comparing(uk -> uk.name() == null
+                        ? ""
+                        : uk.name(),
+                String.CASE_INSENSITIVE_ORDER));
+        return result;
     }
 
     @Nullable

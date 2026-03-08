@@ -7,6 +7,8 @@ import com.amarildoaliaj.datum.core.generator.GenerationPolicy;
 import com.amarildoaliaj.datum.core.generator.RowGenerator;
 import com.amarildoaliaj.datum.core.generator.fk.ForeignKeyLookup;
 import com.amarildoaliaj.datum.core.generator.fk.JdbcForeignKeyValueProvider;
+import com.amarildoaliaj.datum.core.generator.unique.DefaultUniqueValueGenerator;
+import com.amarildoaliaj.datum.core.generator.unique.UniqueLookup;
 import com.amarildoaliaj.datum.core.order.TableOrderPlanner;
 import com.amarildoaliaj.datum.core.order.TopologicalTableOrderPlanner;
 import com.amarildoaliaj.datum.core.planning.DefaultInsertPlanner;
@@ -291,7 +293,9 @@ public class Main implements Runnable {
                     RowGenerator rowGenerator = new RowGenerator(
                             new DefaultColumnGeneratorRegistry(generationPolicy),
                             new ForeignKeyLookup(),
-                            new JdbcForeignKeyValueProvider(connection)
+                            new JdbcForeignKeyValueProvider(connection),
+                            new UniqueLookup(),
+                            new DefaultUniqueValueGenerator()
                     );
 
                     Random rnd = new Random();

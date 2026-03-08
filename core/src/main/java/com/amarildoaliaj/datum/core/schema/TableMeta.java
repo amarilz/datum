@@ -11,7 +11,8 @@ public record TableMeta(
         String name,
         List<ColumnMeta> columns,
         List<String> primaryKeyColumns,
-        List<ForeignKeyMeta> importedKeys
+        List<ForeignKeyMeta> importedKeys,
+        List<UniqueKeyMeta> uniqueKeys
 ) {
 
     public String qualifiedName() {
